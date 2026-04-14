@@ -59,8 +59,8 @@ struct arp_packet {
 
 void forge_ethernet (struct eth_frame * eth, unsigned char * dest_addr, unsigned char type) {
     for (int i = 0; i < 6; i++) {
-            eth->src[i] = my_mac[i]; // Set the source MAC address of the frame with our MAC address
-            eth->dst[i] = dest_addr[i]; // Set the destination MAC address of the frame with the destination address passed as parameter
+        eth->src[i] = my_mac[i]; // Set the source MAC address of the frame with our MAC address
+        eth->dst[i] = dest_addr[i]; // Set the destination MAC address of the frame with the destination address passed as parameter
     }
     eth->type = htons(type); // We must swap the bytes
 }
