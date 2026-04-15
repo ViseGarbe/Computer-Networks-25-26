@@ -68,7 +68,7 @@ struct arp_packet {
     unsigned char dst_ip[4]; // Target IP address
 };
 
-void forge_ethernet (struct eth_frame * eth, unsigned char * dest_addr, unsigned char type) {
+void forge_ethernet (struct eth_frame * eth, unsigned char * dest_addr, unsigned short type) {
     for (int i = 0; i < 6; i++) {
         eth->src[i] = my_mac[i]; // Set the source MAC address of the frame with our MAC address
         eth->dst[i] = dest_addr[i]; // Set the destination MAC address of the frame with the destination address passed as parameter
@@ -76,7 +76,7 @@ void forge_ethernet (struct eth_frame * eth, unsigned char * dest_addr, unsigned
     eth->type = htons(type); // We must swap the bytes
 }
 
-void forge_arp_request (struct arp_packet * arp, unsigned char * dst_ip) {
+void forge_arp_request (struct arp_packet * arp, unsigned short * dst_ip) {
     arp->htype = htons(1); // Hardware type: Ethernet
     arp->ptype = htons(0x0800); // Protocol type: IPv4
     arp->hlen = 6; // Hardware address length
@@ -112,12 +112,10 @@ void forge_ip (struct ip_datagram * ip, unsigned char * dst_ip) {
     ip->header_checksum = htons(0); // Header checksum (to be calculated later)
 
     // Set the source IP address
-    for (int i = 0; i < 4; i++) 
-        ip->src_ip[i] = my_ip[i];
+    ip->src_ip = *(unsigned int *)my_ip;
 
     // Set the destination IP address
-    for (int i = 0; i < 4; i++) 
-        ip->dst_ip[i] = dst_ip[i];
+    ip->dst_ip = *(unsigned int *)dst_ip;
 }
 
 struct sockaddr_ll sll; // Socket address structure for AF_PACKET
