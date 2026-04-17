@@ -1,3 +1,16 @@
+/*
+README: 
+    This code is a simple implementation of the ping command using raw sockets in C. 
+    It creates an ICMP echo request packet, encapsulates it in an IP datagram, and then 
+    encapsulates it in an Ethernet frame. It then sends the packet to the target IP 
+    address and waits for an ICMP echo reply. The code also includes a function to resolve 
+    the MAC address of the target IP address using ARP.
+
+To compile the code, use the following command:
+    gcc ping.c -o np
+*/
+
+
 #include <sys/types.h>
 #include <errno.h> // man 3 perror
 #include <arpa/inet.h> //used for htons (from Big Endian to Little Endian)
@@ -7,7 +20,12 @@
 #include <net/ethernet.h> /* the L2 protocols */
 #include <net/if.h>
 
-/*
+/*man 7 packet
+Must include:
+    <sys/socket.h>, 
+    <linux/if_packet.h>
+    <net/ethernet.h> // the L2 protocols
+
 struct sockaddr_ll {
     unsigned short sll_family;      <-----------
     unsigned short sll_protocol;    Not used
@@ -19,10 +37,15 @@ struct sockaddr_ll {
 };
 */
 
-//protocol is in general 0, but we can specify a particular protocol if needed
-
 // Configuration of the node
-unsigned char my_mac[6] = {22,0x00, 0xb6, 0xec, 0x6a, 0x3c}; // ifconfig to obtain the real mac eth0
+unsigned char my_mac[6] = {0x22, 0x00, 0xb6, 0xec, 0x6a, 0x3c};// ifconfig to obtain the real mac
+    /* 
+    If ifcofig return command not found use /sbin/ifconfig or /usr/sbin/ifconfig
+    eth0: flags=4163<UP,BROADCAST,RUNNING,MULTICAST>  mtu 1500
+        ...
+        ether 22:00:b6:ec:6a:3c  txqueuelen 1000  (Ethernet) <------- Mac address of the node
+        ...
+    */
 unsigned char broadcast[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}; // Default
 unsigned char my_ip[4] = {139, 162, 197, 68};
 unsigned char netmask[4] = {255, 255, 255, 0}; // ifconfig to obtain the netmask, /sbin/ifconfig
@@ -330,7 +353,7 @@ struct icmp_message {
 };
 
 void forge_icmp(struct icmp_message * icmp) {
-    icmp->type = 8; // Echo request message
+    icmp->type = 8; // Echo request message, for echo reply message we must set it to 0
     icmp->code = 0; // No need for icmp
     icmp->checksum = 0; // Overwrite it later;
     icmp->id = htons(0xABCD); // Identifier, it can be random, but it is common to use 0 if code is 0
@@ -345,27 +368,29 @@ void forge_icmp(struct icmp_message * icmp) {
     icmp->checksum = htons(checksum((unsigned char *)icmp, 8+20));
 }
 
-struct sockaddr_ll sll;
+// Socket address structure for the link layer (Ethernet)
+struct sockaddr_ll sll; 
 
+// Socket descriptor
 int s;
+
+// Counter for printing the bytes of the packet
+int count = 0; 
 
 int resolve_ip (unsigned char * target_ip, unsigned char * target_mac);
 
 int main() {
-    unsigned char target_ip[4] = {139, 162, 197, 70};
+    // Local // unsigned char target_ip[4] = {139, 162, 197, 70};
+    unsigned char target_ip[4] = {194, 244, 10, 164};
     unsigned char target_mac[6];
     unsigned char buffer[1500];
 
-    // Bisogna spostare la creazione della socket qui
-    s = socket(AF_PACKET, SOCK_RAW, htons(ETH_P_ALL));
+    // Size of the packet sent or received
+    int size;
 
-    // Check the creation of the socket
-    if (s == -1) {
-        perror("Socket Failed");
-        return -1;
-    }
+    // Length of the sockaddr_ll structure
+    int structlen;
 
-    // --->
     struct eth_frame * eth = (struct eth_frame *) buffer;
     struct ip_datagram * ip = (struct ip_datagram *) eth->payload;
     struct icmp_message * icmp = (struct icmp_message *) ip->payload;
@@ -386,10 +411,11 @@ int main() {
         resolve_ip(gateway, target_mac);
     }
 
-    printf("Resolved MAC is...\n");
+    printf("\n\nResolved MAC is...\n");
 
     for (int i = 0; i < 6; i++)
-        printf("%2.X (%3.d)", target_mac[i], target_mac[i]);
+        printf("%.2X (%.3d) ", target_mac[i], target_mac[i]);  
+    printf("\n");
 
     forge_ethernet(eth, target_mac, 0x0800); // type = 0x0800 for the IP packet
 
@@ -409,34 +435,105 @@ int main() {
         20 bytes for the ICMP payload
             20 bytes for the ICMP payload - We choose to put 20 bytes of data inside the ICMP payload, but we can choose any size for the payload
     */
-    printf("Echo Request over IP over Ethernet...\n");
-    for (int i = 0; i < 14+20+8+20; i++)
-        printf("%2.X (%3.d)", buffer[i], buffer[i]);
+    printf("\n\nEcho Request over IP over Ethernet...\n");
+    count = 0;
+    for (int i = 0; i < 14+20+8+20; i++) {
+        printf("%.2X (%.3d) ", buffer[i], buffer[i]);
+        count = (count == 8) ? 1 : count + 1;
+        if (count == 8)
+            printf("\n");
+    }
+    printf("\n");
+
+    structlen = sizeof(struct sockaddr_ll);
+
+    for (int i = 0; i < structlen; i++)
+        ((char *)&sll)[i] = 0; // We reset all the bytes to zero
+
+    sll.sll_family = AF_PACKET;
+    sll.sll_ifindex = if_nametoindex("eth0");
+
+    // Socket creation
+    s = socket(AF_PACKET, SOCK_RAW, htons(ETH_P_ALL));
+
+    // Check the creation of the socket
+    if (s == -1) {
+        perror("Socket Failed");
+        return -1;
+    }
+  
+    // man 2 sendto               
+    size = sendto(s, buffer, 14 + 20 + 8 + 20, 0, (struct sockaddr *) &sll, structlen);
+
+    if (size == -1) {
+        perror("Sendto Failed");
+        return -1;
+    }
+
+    for (int i = 0; i < structlen; i++)
+        ((char *)&sll)[i] = 0; // We reset all the bytes to zero
+    
+    for (int i = 0; i < 1000; i++) {
+        // man 2 recvfrom
+        size = recvfrom(s, buffer, 1500, 0, (struct sockaddr *)&sll, &structlen);
+        if (size == -1) {
+            perror("Recvfrom Failed");
+            return -1;
+        }
+        if (eth->type == ntohs(0x0800)) {
+            // When we are inside this if body we are in the ip layer, and we are receiving only ip packet
+            if (ip->proto == 1) {
+                // When we are inside this if body we are in the icmp layer, and we are receiving only icmp packet
+                if (icmp->type == 0) {
+                    printf("\n\nEcho Reply received...\n");
+                    count = 0;
+                    for (int j = 0; j < size; j++) {
+                        printf("%.2X (%.3d) ", buffer[j], buffer[j]);
+                        count = (count == 8) ? 1 : count + 1;
+                        if (count == 8)
+                            printf("\n");
+                    }
+                    printf("\n");
+                    return 0;
+                }
+            }
+        }
+    }
 }
 
 int resolve_ip(unsigned char * target_ip, unsigned char * target_mac) {
+    printf("\nResolving IP address...\n");
 
+    // Size of the packet sent or received
     int size;
 
+    // Length of the sockaddr_ll structure
     int structlen;
 
+    // Buffer for the packet
     unsigned char buf[1500];
 
-    struct eth_frame * eth;
-    struct arp_packet * arp;
-
-    eth = (struct eth_frame *) buf;
-    arp = (struct arp_packet *) eth->payload; // or (*eth).payload
+    struct eth_frame * eth = (struct eth_frame *) buf;
+    struct arp_packet * arp = (struct arp_packet *) eth->payload; // or (*eth).payload
 
     // 0x0806 value of ULP for arp packet
     forge_ethernet(eth, broadcast, 0x0806);
 
+    // Forge the ARP request
     forge_arp_request(arp, target_ip);
 
-    printf("ARP request prepared...\n");
-    for (int i = 0; i < sizeof(struct arp_packet); i++) {
-        printf("%2.X (%3.d)", buf[i], buf[i]);
+    printf("\nARP request prepared...\n");
+    count = 0;
+    // Why 14? Because the Ethernet header is 14 bytes, and the arp packet is after the Ethernet header, 
+    // so we must start to print from the first byte of the Ethernet header, and we must print all the bytes 
+    // of the Ethernet header and all the bytes of the arp packet, so we must print 14 + sizeof(struct arp_packet) bytes
+    for (int i = 0; i < 14 + sizeof(struct arp_packet); i++) {
+        printf("%.2X (%.3d) ", buf[i], buf[i]);
+        count = (count == 8) ? 1 : count + 1;
+        if (count == 8)
+            printf("\n");
     }
+    printf("\n");
 
     structlen = sizeof(struct sockaddr_ll);
 
@@ -449,38 +546,78 @@ int resolve_ip(unsigned char * target_ip, unsigned char * target_mac) {
     sll.sll_family = AF_PACKET;
     sll.sll_ifindex = if_nametoindex("eth0");
 
-    // ssize_t sendto(
-    //          int sockfd,
-    //          const void *buf,
-    //          size_t len,
-    //          int flags,
-    //          const struct sockaddr *dest_addr,
-    //          socklen_t addrlen
-    //                );
+    // Socket creation
+    s = socket(AF_PACKET, SOCK_RAW, htons(ETH_P_ALL));
+
+    // Check the creation of the socket
+    if (s == -1) {
+        perror("Socket Failed");
+        return -1;
+    }
+
+    /* man 2 sendto
+    Must include 
+        <sys/socket.h>
+
+    ssize_t sendto(
+        int socket, 
+        const void *buffer, 
+        size_t length, 
+        int flags, 
+        const struct sockaddr *dest_addr, 
+        socklen_t dest_len
+    );
+    */
     size = sendto(s, buf, 14 + sizeof(struct arp_packet), 0, (struct sockaddr *) &sll, structlen);
 
-    // ssize_t recvfrom(
-    //          int sockfd,
-    //          void *buf, ---> An array passed without [] is a pointer
-    //          size_t len, ---> Size of the buffer
-    //          int flags, ---> Forget about it
-    //          struct sockaddr *src_addr, ---> Generic struct sockaddr
-    //          socklen_t *addrlen ---> Length of the socket passed as a pointer, it could be possible that the size of the structure may be changed by the function, some fields (we don't use) can be modified from the function
-    //                );
-    //size = recvfrom(s, buf, 1500, 0, (struct sockaddr *)&sll, &structlen);
+    if (size == -1) {
+        perror("Sendto Failed");
+        return -1;
+    }
 
-    for (int j = 0; j < 1000; j++) {
+    printf("Sending ARP request (size %d)...\n", size);
+
+    // Clean the structure
+    for (int i = 0; i < structlen; i++) {
+        ((char *)&sll)[i] = 0; // We reset all the bytes to zero
+    }
+
+    // Populate the structure
+    sll.sll_family = AF_PACKET;
+    sll.sll_ifindex = if_nametoindex("eth0");
+
+    /* man 2 recvfrom
+    Must include: 
+        #include <sys/types.h>
+        #include <sys/socket.h>
+
+    ssize_t recvfrom(
+        int sockfd,
+        void *buf, ---> An array passed without [] is a pointer
+        size_t len, ---> Size of the buffer
+        int flags, ---> Forget about it
+        struct sockaddr *src_addr, ---> Generic struct sockaddr
+        socklen_t *addrlen ---> Lenght of the socket passed as a pointer, it could be possible that the size of the structure may be changed by the function, some fields (we don't use) can be modified from the function
+    );
+    */
+
+    for (int i = 0; i < 1000; i++) {
         size = recvfrom (s, buf, 1500, 0, (struct sockaddr *)&sll, &structlen);
         if (size == -1) {
             perror("Recvfrom Failed");
             return -1;
         }
         if (eth->type == htons(0x0806)) {
-            // When we are inside this if body we are the arp layer, and we are receiving only arp packet
+            // When we are inside this if body we are the arp layer and we are receving only arp packets
             if (arp->op == htons(0x0002)) {
-                printf("ARP response received...\n");
+                // When we are inside this if body we are receiving only ARP reply
+                printf("\nARP response received (size = %d)...\n", size);
+                count = 0; 
                 for (int i = 0; i < size; i++) {
-                    printf("%2.X (%3.d)", buf[i], buf[i]);
+                    printf("%.2X (%.3d) ", buf[i], buf[i]);
+                    count = (count == 8) ? 1 : count + 1;
+                    if (count == 8)
+                        printf("\n");
                 }
                 printf("\n");
                 for (int i = 0; i < 6; i++)
