@@ -9,31 +9,30 @@
 #define n_desc 1 // Define a constant for the number of file descriptors to monitor
 #define timeout 0 // Define a constant for the timeout value in milliseconds (0 means return immediately)
 #define bufsize 100 // Define a constant for the size of the data buffer
- 
+
 unsigned char databuf[bufsize]; // Buffer to store data read from stdin
 int bufstart = 0; 
  
-/*
-
-The set of file descriptors to be monitored is specified in the
-fds argument, which is an array of structures of the following
-form:
-
-    struct pollfd {
-        int   fd;         // file descriptor 
-        short events;     // requested events 
-        short revents;    // returned events 
-    };
-
-poll() 
-    performs a similar task to select(2): it waits for one of a
-    set of file descriptors to become ready to perform I/O. 
-
-*/
-
 void myio (int signal) { 
+    /*
+    The set of file descriptors to be monitored is specified in the
+    fds argument, which is an array of structures of the following
+    form:
+
+        struct pollfd {
+            int   fd;         // file descriptor 
+            short events;     // requested events 
+            short revents;    // returned events 
+        };
+
+    poll() 
+        performs a similar task to select(2): it waits for one of a
+        set of file descriptors to become ready to perform I/O. 
+    */
     struct pollfd p[n_desc]; // Array of pollfd structures to monitor file descriptors
+    
     int t = 1; // Variable to hold the number of bytes read from stdin, initialized to 1 to enter the loop
+    
     printf("I/O handler called\n"); 
 
     p[0].fd = 0; //stdin 
@@ -116,9 +115,6 @@ int main() {
     // Registra due handler: myio per SIGIO e mytimer per SIGALRM.
     sa_timer.sa_handler = mytimer; 
     sa_io.sa_handler = myio; 
-
-    // Set up the signal handlers for SIGIO and SIGALRM
-
     
     /*
     SIGIO per dire “c’è qualcosa da leggere su input”
