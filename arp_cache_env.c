@@ -292,29 +292,34 @@ int main() {
     */
 
     init_cache(); 
+    for (int i = 0; i < 10; i++) {
 
-    if (target_ip == NULL || target_mac == NULL) { 
+        target_ip[3] += i; 
+
+        if (target_ip == NULL || target_mac == NULL) { 
         printf("Invalid input parameters\n");
         return -1;
-    }
-
-    if (cache_lookup(target_ip) == -1) { // Cache miss
-        if (resolve_ip(target_ip, target_mac) == -1) {
-            return -1;
         }
 
-        while (cache_lookup(target_ip) == -1) {
-            pause();   // si sveglia su SIGIO o SIGALRM
+        if (cache_lookup(target_ip) == -1) { // Cache miss
+            if (resolve_ip(target_ip, target_mac) == -1) {
+                return -1;
+            }
+
+            while (cache_lookup(target_ip) == -1) {
+                pause();   // si sveglia su SIGIO o SIGALRM
+            }
         }
+        /*
+        printf("\n============================================================\n");
+        printf("\nResolved MAC is...\n");
+        for (int i = 0; i < 6; i++) {
+            printf("%.2X (%.3d) ", target_mac[i], target_mac[i]);
+        }
+        printf("\n");
+        printf("\n============================================================\n\n");
+        */
     }
-            
-    printf("\n============================================================\n");
-    printf("\nResolved MAC is...\n");
-    for (int i = 0; i < 6; i++) {
-        printf("%.2X (%.3d) ", target_mac[i], target_mac[i]);
-    }
-    printf("\n");
-    printf("\n============================================================\n\n");
 
     return 0; 
 }
@@ -482,6 +487,8 @@ int receive_arp_reply(unsigned char *target_ip, unsigned char *target_mac) {
                 printf("\n============================================================\n\n");
             }
 
+            printf("\n\n")
+            print_cache_entries(); 
             return 1; 
         }
     }
@@ -738,18 +745,23 @@ void myio(int signal) {
 }
 
 void mytimer (int signal) { 
-    printf("Timer handler called\n"); 
+    //printf("Timer handler called\n"); 
     for (int i = 0; i < ARP_CACHE_SIZE; i++) {
         if (ace[i].state == ARP_PENDING) {
+            /*
+                Se la cella i-esima della cache è in attesa di un'ARP reply incremento il retry_timer e nel caso in cui siperi il
+                Limite impostato viene rinviata un'ARP request, 
+            */
             if (++ace[i].retry_timer >= ARP_RETRY_TIMEOUT) {
-                printf("Resending pkt"); 
+                printf("\nResending ARP request...\n"); 
                 send_arp_request(ace[i].ip);
                 ace[i].retry_timer = 0;
             }
         }
         else if (ace[i].state == ARP_RESOLVED) {
-            if (--ace[i].ttl == 0)
+            if (--ace[i].ttl == 0) {
                 init_cache_entry(i); 
+            }
         }
     }
 }
