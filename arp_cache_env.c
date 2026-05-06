@@ -21,6 +21,7 @@ For the ARP Cache
 
 #define ARP_CACHE_SIZE 8
 #define ARP_ENTRY_TTL 30 // Time to live of an ARP cache entry in seconds
+#define ARP_RETRY_TIMEOUT 3 // Timeout arp request
 
 /*
 For the Environment
@@ -174,11 +175,21 @@ struct sigaction sa_io;
 
 int resolve_ip (unsigned char * target_ip, unsigned char * target_mac); 
 
+int send_arp_request(unsigned char *target_ip);
+
+int receive_arp_reply(unsigned char *target_ip, unsigned char *target_mac);
+
 void init_cache();
 
 int cache_lookup(unsigned char * ip);
 
+int find_cache_entry(unsigned char * ip);
+
 int set_cache_mac(unsigned char * ip, unsigned char * mac);
+
+int set_pending_cache_entry(unsigned char * ip);
+
+int set_resolved_cache_entry(unsigned char * ip);
 
 int get_free_cache_entry(); 
 
@@ -283,7 +294,7 @@ int main() {
     init_cache(); 
 
     if (target_ip == NULL || target_mac == NULL) { 
-        printf("Invalid input parameters for resolve_ip\n");
+        printf("Invalid input parameters\n");
         return -1;
     }
 
@@ -291,153 +302,191 @@ int main() {
         if (resolve_ip(target_ip, target_mac) == -1) {
             return -1;
         }
-    }
 
+        while (cache_lookup(target_ip) == -1) {
+            pause();   // si sveglia su SIGIO o SIGALRM
+        }
+    }
+            
+    printf("\n============================================================\n");
     printf("\nResolved MAC is...\n");
     for (int i = 0; i < 6; i++) {
         printf("%.2X (%.3d) ", target_mac[i], target_mac[i]);
     }
     printf("\n");
+    printf("\n============================================================\n\n");
 
     return 0; 
 }
 
-/*
-Return values: 
-    -> -1: Sendto/Recvfrom Failed
-    ->  1: Operation Successful
-*/
 int resolve_ip (unsigned char * target_ip, unsigned char * target_mac) {
 
-    printf("\nResolving IP address...\n");
+    if (target_ip == NULL || target_mac == NULL) { 
+        printf("Invalid input parameters for resolve ip\n");
+        return -1;
+    }
 
-    // Size of the packet sent or received
-    int size; 
+    if (cache_lookup(target_ip) == 1) { // Cache hit
+        return 1; 
+    }
 
-    // Length of the sockaddr_ll structure
+    if (find_cache_entry(target_ip) == -1 && get_free_cache_entry() == -1) {
+        return -1;  // Cache piena
+    }
+
+    if (send_arp_request(target_ip) == -1) {
+        return -1;  // Invio fallito
+    }
+
+    return 0; // Risoluzione avviata, ancora pending
+}
+
+int send_arp_request(unsigned char *target_ip) {
+    if (target_ip == NULL) {
+        return -1;
+    }
+    
     int structlen = sizeof(struct sockaddr_ll); 
 
-    // Buffer for the packet
     unsigned char buf[1500];
 
     struct eth_frame * eth = (struct eth_frame *) buf;
-    struct arp_packet * arp = (struct arp_packet *) eth->payload; // or (*eth).payload
+    struct arp_packet * arp = (struct arp_packet *) eth->payload;
 
-    // Forge the Ethernet frame - 0x0806 is the value of ULP field for ARP
+    // Forge the Ethernet frame 
     forge_ethernet(eth, broadcast, 0x0806); // Broadcast address
 
     // Forge the ARP request
     forge_arp_request(arp, target_ip);
 
-    printf("\n\nSending ARP request for IP address...\n");
-    count = 0; 
-    for (int i = 0; i < 14 + sizeof(struct arp_packet); i++) {
-        printf("%.2X (%.3d) ", buf[i], buf[i]);
-        count = (count == 8) ? 1 : count + 1;
-        if (count == 8)
-            printf("\n");
-    }
-    printf("\n");
-
     // Clean the structure
     for (int i = 0; i < structlen; i++) {
-        ((char *)&sll)[i] = 0; // We reset all the bytes to zero
-    }
-
-    // Populate the sockaddr_ll structure
-    sll.sll_family = AF_PACKET; // Address family
-    // If ifcofig return command not found use /sbin/ifconfig or /usr/sbin/ifconfig
-    sll.sll_ifindex = if_nametoindex("eth0"); // We have to know the number of the intrface to send the frame, we can obtain it with ifconfig or ip addr show
-
-    /* man 2 sendto
-    Must include 
-        <sys/socket.h>
-
-    ssize_t sendto(
-        int socket, 
-        const void *buffer, 
-        size_t length, 
-        int flags, 
-        const struct sockaddr *dest_addr, 
-        socklen_t dest_len
-    );
-    */
-    size = sendto(s, buf, 14 + sizeof(struct arp_packet), 0, (struct sockaddr *) &sll, structlen);
-
-    if (size == -1) {
-        perror("Sendto Failed");
-        return -1;
-    }
-
-    printf("\nARP request (size %d)...\n", size);
-
-    // Clean the structure
-    for (int i = 0; i < structlen; i++) {
-        ((char *)&sll)[i] = 0; // We reset all the bytes to zero
+        ((char *)&sll)[i] = 0; 
     }
 
     // Populate the structure
     sll.sll_family = AF_PACKET;
     sll.sll_ifindex = if_nametoindex("eth0");
 
-    /* man 2 recvfrom
-    Must include: 
-        #include <sys/types.h>
-        #include <sys/socket.h>
+    if (sll.sll_ifindex == 0) 
+        return -1; 
 
-    ssize_t recvfrom(
-        int sockfd,
-        void *buf, ---> An array passed without [] is a pointer
-        size_t len, ---> Size of the buffer
-        int flags, ---> Forget about it
-        struct sockaddr *src_addr, ---> Generic struct sockaddr
-        socklen_t *addrlen ---> Lenght of the socket passed as a pointer, it could be possible that the size of the structure may be changed by the function, some fields (we don't use) can be modified from the function
-    );
-    */
+    int size = sendto(s, buf, 14 + sizeof(struct arp_packet), 0, (struct sockaddr *) &sll, structlen);
 
-    while (1) {
-        size = recvfrom(s, buf, 1500, 0, (struct sockaddr *)&sll, &structlen);
-        if (size == -1) {
-            perror("Recvfrom Failed");
-            return -1;
-        }
-        if (eth->type == htons(0x0806)) {
-            // When we are inside this if body we are the arp layer and we are receving only arp packets
-            if (arp->op == htons(0x0002)) {
-                // When we are inside this if body we are receiving only ARP reply
-                printf("\nARP response received (size = %d)...\n", size);
-                count = 0;
-                for (int j = 0; j < size; j++) {
-                    printf("%.2X (%.3d) ", buf[j], buf[j]);
-                    count = (count == 8) ? 1 : count + 1;
-                    if (count == 8)
-                        printf("\n");
-                }
-                printf("\n");
+    if (size == -1) {
+        perror("Sendto Failed");
+        return -1;
+    }
 
-                int match = 1;
-                for (int j = 0; j < 4; j++) {
-                    if (arp->dst_ip[j] != my_ip[j] || arp->src_ip[j] != target_ip[j]) { 
-                        match = 0;
-                        break;
-                    }
-                }
-                
-                if (match) {
-                    for (int j = 0; j < 6; j++) {
-                        target_mac[j] = arp->src_mac[j]; // Set the target MAC address with the source MAC address of the ARP reply
-                    }
+    return 1; 
+}
 
-                    // We set the cache entry with the source IP and the source MAC address of the ARP reply                     
-                    if (set_cache_mac(arp->src_ip, arp->src_mac) == -1) {
-                        printf("Warning: MAC resolved but cache is full\n");
-                    }
-                    
-                    return 1; 
+int receive_arp_reply(unsigned char *target_ip, unsigned char *target_mac) {
+
+    if (target_ip == NULL || target_mac == NULL) {
+        return -1; 
+    }
+    
+    int structlen = sizeof(struct sockaddr_ll); 
+
+    unsigned char buf[1500];
+
+    struct eth_frame * eth = (struct eth_frame *) buf;
+    struct arp_packet * arp = (struct arp_packet *) eth->payload;
+
+    // Clean the structure
+    for (int i = 0; i < structlen; i++) {
+        ((char *)&sll)[i] = 0; 
+    }
+
+    // Populate the structure
+    sll.sll_family = AF_PACKET;
+    sll.sll_ifindex = if_nametoindex("eth0");
+
+    if (sll.sll_ifindex == 0) 
+        return -1; 
+
+    int size = recvfrom(s, buf, 1500, 0, (struct sockaddr *)&sll, &structlen);
+
+    if (size == -1) {
+
+        if (errno == EAGAIN || errno == EWOULDBLOCK) 
+            return 0; 
+
+        perror("Recvfrom Failed");
+        return -1;
+
+    }
+
+    if (eth->type == htons(0x0806)) {
+
+        // When we are inside this if body we are the arp layer and we are receving only arp packets
+
+        if (arp->op == htons(0x0002)) {
+
+            // When we are inside this if body we are receiving only ARP reply
+
+            
+            for (int j = 0; j < 4; j++) {
+                if (arp->dst_ip[j] != my_ip[j] || arp->src_ip[j] != target_ip[j]) { 
+                    return 0; 
                 }
             }
+            for (int j = 0; j < 6; j++) {
+                target_mac[j] = arp->src_mac[j]; // Set the target MAC address with the source MAC address of the ARP reply
+            }
+
+            printf("\n============================================================\n");
+            printf("\nResolved MAC is...\n");
+            for (int i = 0; i < 6; i++) {
+                printf("%.2X (%.3d) ", arp->src_mac[i], arp->src_mac[i]);
+            }
+            printf("\n");
+
+            printf("\nResolved sender IP is...\n");
+            for (int i = 0; i < 4; i++) {
+                printf("%.2X (%.3d) ", arp->src_ip[i], arp->src_ip[i]);
+            }
+            printf("\n");
+
+            printf("\nResolved destination IP is...\n");
+            for (int i = 0; i < 4; i++) {
+                printf("%.2X (%.3d) ", arp->dst_ip[i], arp->dst_ip[i]);
+            }
+            printf("\n");
+            printf("\n============================================================\n\n");
+
+            // We set the cache entry with the source IP and the source MAC address of the ARP reply
+            int index = set_cache_mac(arp->src_ip, arp->src_mac);    
+
+            if (index  == -1) 
+                printf("Warning: MAC resolved but cache is full\n");
+            
+            if (ace[index].state == ARP_PENDING && index != -1)
+                set_resolved_cache_entry(arp->src_ip); 
+
+            if (index != -1) {
+                printf("\n============================================================\n");
+                printf("\nEntry: %d", index); 
+                printf("\n\tState: %c", ace[index].state);
+                printf("\n\tIP: ");
+                for (int j = 0; j < 4; j++) {
+                    printf("%d ", ace[index].ip[j]);
+                }
+                printf("\n\tMAC: ");
+                for (int j = 0; j < 6; j++) {
+                    printf("%02X ", ace[index].mac[j]);
+                }
+                printf("\n\tTTL: %ds", ace[index].ttl);
+                printf("\n\tRetry Timer: %ds\n", ace[index].retry_timer);
+                printf("\n============================================================\n\n");
+            }
+
+            return 1; 
         }
     }
+
+    return 2; 
 }
 
 /*
@@ -471,12 +520,41 @@ int cache_lookup(unsigned char * ip) {
             for (int j = 0; j < 6; j++) {
                 target_mac[j] = ace[i].mac[j]; // Set the target MAC address with the one found in the cache
             }
+            return 1;
+        }
+    }
+
+    return -1; // Return -1 if no matching entry is found
+}
+
+
+int find_cache_entry(unsigned char * ip) {
+
+    for (int i = 0; i < ARP_CACHE_SIZE; i++) {
+        if(ace[i].state == ARP_FREE) {
+            continue;
+        }
+
+        int match = 1;
+
+        for (int j = 0; j < 4; j++) {
+            if (ace[i].ip[j] != ip[j]) {
+                match = 0;
+                break;
+            }
+        }
+
+        if (match) {
+            for (int j = 0; j < 6; j++) {
+                target_mac[j] = ace[i].mac[j]; // Set the target MAC address with the one found in the cache
+            }
             return i; // Return the index of the matching entry
         }
     }
 
     return -1; // Return -1 if no matching entry is found
 }
+
 
 /*
 Return values:
@@ -488,69 +566,63 @@ int set_cache_mac(unsigned char * ip, unsigned char * mac) {
     Cerco di capire se l'entry i-esima della cache corrisponde all'IP passato come parametro, 
     se si aggiorno il MAC address e lo stato dell'entry, altrimenti passo all'entry successiva 
     */
+    int index = find_cache_entry(ip); 
 
-    for (int i = 0; i < ARP_CACHE_SIZE; i++) {
-        if (ace[i].state == ARP_PENDING || ace[i].state == ARP_RESOLVED) {
-        
-            int match = 1;
+    if (index != -1 && (ace[index].state == ARP_PENDING || ace[index].state == ARP_RESOLVED)) {
+        for (int j = 0; j < 6; j++)
+            ace[index].mac[j] = mac[j]; // Set the cache mac address with the one passed as parameter
+        ace[index].state = ARP_RESOLVED;
+        ace[index].ttl = ARP_ENTRY_TTL; // Reset the TTL of the entry
+        ace[index].retry_timer = 0; // Reset the retry timer of the entry
 
-            for (int j = 0; j < 4; j++) {
-
-                if (ace[i].ip[j] != ip[j]) {
-                    match = 0;
-                    break;
-                }
-                
-            }
-
-            // Se l'entry i-esima della cache corrisponde all'IP passato come parametro, aggiorno il MAC address e lo stato dell'entry
-            if (match) {
-
-                for (int j = 0; j < 6; j++) {
-                    ace[i].mac[j] = mac[j]; // Set the cache mac address with the one passed as parameter
-                }
-
-                ace[i].state = ARP_RESOLVED;
-
-                ace[i].ttl = ARP_ENTRY_TTL; // Reset the TTL of the entry
-
-                ace[i].retry_timer = 0; // Reset the retry timer of the entry
-
-                printf("\n\t===== DEBUG =====\n");
-                print_cache_entries();
-                printf("\n\t===== DEBUG =====\n");
-                
-                return i; // Return the index of the matching entry
-            }
-        }
+        return index; 
     }
-
+    
     /* 
     Se non esiste un'entry corrispondente all'IP passato come parametro, cerco un'entry libera per creare una nuova entry 
     con l'IP e il MAC address passati come parametro 
     */
-
-    int index = get_free_cache_entry();
+    index = get_free_cache_entry();
 
     if (index != -1) {
-
         ace[index].state = ARP_RESOLVED;
-
-        for (int i = 0; i < 4; i++) {
+        for (int i = 0; i < 4; i++) 
             ace[index].ip[i] = ip[i];
-        }
-
-        for (int i = 0; i < 6; i++) {
+        for (int i = 0; i < 6; i++) 
             ace[index].mac[i] = mac[i];
-        }
-
         ace[index].ttl = ARP_ENTRY_TTL; 
-
         ace[index].retry_timer = 0;
     }
 
     return index; // Return the index of the entry or -1 if no free entry is empty
 }
+
+int set_pending_cache_entry(unsigned char * ip) {
+
+    int index = find_cache_entry(ip); 
+
+    if (index != -1) {
+        for (int j = 0; j < 4; j++) 
+            ace[index].ip[j] = ip[j]; // Set the cache ip address with the one passed as parameter
+        ace[index].state = ARP_PENDING;
+        ace[index].ttl = ARP_ENTRY_TTL; // Reset the TTL of the entry
+        ace[index].retry_timer = 0; // Reset the retry timer of the entry
+    }
+
+    return index; 
+}
+
+int set_resolved_cache_entry(unsigned char * ip) {
+    int index = find_cache_entry(ip); 
+
+    if (index != -1) {
+        ace[index].state = ARP_RESOLVED;
+        ace[index].ttl = ARP_ENTRY_TTL; // Reset the TTL of the entry
+    }
+    
+    return index; 
+}
+
 
 int get_free_cache_entry() {
     for (int i = 0; i < ARP_CACHE_SIZE; i++) {
@@ -575,13 +647,16 @@ void print_cache_entries() {
     for (int i = 0; i < ARP_CACHE_SIZE; i++) {
         printf("\nEntry: %d", i); 
         printf("\n\tState: %c", ace[i].state);
+        printf("\n\tIP: ");
         for (int j = 0; j < 4; j++) {
-            printf("\n\tIP: %d", ace[i].ip[j]);
+            printf("%d ", ace[i].ip[j]);
         }
+        printf("\n\tMAC: ");
         for (int j = 0; j < 6; j++) {
-            printf("\n\tMAC: %02X", ace[i].mac[j]);
+            printf("%02X ", ace[i].mac[j]);
         }
-        printf("\n\tRetry Timer: %ds", ace[i].retry_timer);
+        printf("\n\tTTL: %ds", ace[i].ttl);
+        printf("\n\tRetry Timer: %ds\n", ace[i].retry_timer);
     }
 }
 
@@ -604,26 +679,77 @@ void init_cache() {
     }
 }
 
+void init_cache_entry(int index) {
+    ace[index].state = ARP_FREE; 
+
+    for (int j = 0; j < 4; j++) {
+        ace[index].ip[j] = 0;
+    }
+
+    for (int j = 0; j < 6; j++) {
+        ace[index].mac[j] = 0;
+    }
+
+    ace[index].ttl = 0;
+
+    ace[index].retry_timer = 0;
+}
+
 /*
 ===================================================
                     ENVIRONMENT
 ===================================================
 */
 
-void myio (int signal) { 
-    printf("IO handler called\n"); 
+void myio(int signal) {
+    int result;
+
+    while (1) {
+        result = receive_arp_reply(target_ip, target_mac);
+
+        if (result == -1) {
+            printf("\n============================================================\n");
+            printf("\n\tDebug: Errore\n"); 
+            printf("\n============================================================\n\n");
+            return;   
+        }
+
+        if (result == 0) {
+            //printf("\n============================================================\n");
+            //printf("\n\tDebug: Socket vuoto\n"); 
+            //printf("\n============================================================\n\n");
+            return; 
+        }
+
+        if (result == 1) {
+            printf("\n============================================================\n");
+            printf("\n\tDebug: Reply valida processata\n");             
+            printf("\n============================================================\n\n");
+            continue;
+        }
+
+        if (result == 2) {
+            //printf("\n============================================================\n");
+            //printf("\n\tDebug: Pacchetto non utile, continuo la lettura\n"); 
+            //printf("\n============================================================\n\n");
+            continue; // pacchetto non utile, provo a leggere ancora
+        }
+    }
 }
 
 void mytimer (int signal) { 
     printf("Timer handler called\n"); 
     for (int i = 0; i < ARP_CACHE_SIZE; i++) {
-        if (ace[i].state == ARP_FREE) // If the packet has already been acknowledged, skip it
-            continue;
-
-        if (++ace[i].retry_timer < ace[i].ttl) // Increment the timer for the packet and check if it has reached the timeout value
-            continue;
-
-        ace[i].retry_timer = 0;
-        printf("Resending pkt"); 
+        if (ace[i].state == ARP_PENDING) {
+            if (++ace[i].retry_timer >= ARP_RETRY_TIMEOUT) {
+                printf("Resending pkt"); 
+                send_arp_request(ace[i].ip);
+                ace[i].retry_timer = 0;
+            }
+        }
+        else if (ace[i].state == ARP_RESOLVED) {
+            if (--ace[i].ttl == 0)
+                init_cache_entry(i); 
+        }
     }
 }
