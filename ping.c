@@ -1,18 +1,17 @@
 /*
-README: 
-    This code is a simple implementation of the ping command using raw sockets in C. 
-    It creates an ICMP echo request packet, encapsulates it in an IP datagram, and then 
-    encapsulates it in an Ethernet frame. It then sends the packet to the target IP 
-    address and waits for an ICMP echo reply. The code also includes a function to resolve 
+README:
+    This code is a simple implementation of the ping command using raw sockets in C.
+    It creates an ICMP echo request packet, encapsulates it in an IP datagram, and then
+    encapsulates it in an Ethernet frame. It then sends the packet to the target IP
+    address and waits for an ICMP echo reply. The code also includes a function to resolve
     the MAC address of the target IP address using ARP.
 
 To compile the code, use the following command:
     gcc ping.c -o np
 */
 
-
 #include <sys/types.h>
-#include <errno.h> // man 3 perror
+#include <errno.h>     // man 3 perror
 #include <arpa/inet.h> //used for htons (from Big Endian to Little Endian)
 #include <stdio.h>
 #include <sys/socket.h>
@@ -22,7 +21,7 @@ To compile the code, use the following command:
 
 /*man 7 packet
 Must include:
-    <sys/socket.h>, 
+    <sys/socket.h>,
     <linux/if_packet.h>
     <net/ethernet.h> // the L2 protocols
 
@@ -38,14 +37,14 @@ struct sockaddr_ll {
 */
 
 // Configuration of the node
-unsigned char my_mac[6] = {0x22, 0x00, 0xb6, 0xec, 0x6a, 0x3c};// ifconfig to obtain the real mac
-    /* 
-    If ifcofig return command not found use /sbin/ifconfig or /usr/sbin/ifconfig
-    eth0: flags=4163<UP,BROADCAST,RUNNING,MULTICAST>  mtu 1500
-        ...
-        ether 22:00:b6:ec:6a:3c  txqueuelen 1000  (Ethernet) <------- Mac address of the node
-        ...
-    */
+unsigned char my_mac[6] = {0x22, 0x00, 0xb6, 0xec, 0x6a, 0x3c}; // ifconfig to obtain the real mac
+/*
+If ifcofig return command not found use /sbin/ifconfig or /usr/sbin/ifconfig
+eth0: flags=4163<UP,BROADCAST,RUNNING,MULTICAST>  mtu 1500
+    ...
+    ether 22:00:b6:ec:6a:3c  txqueuelen 1000  (Ethernet) <------- Mac address of the node
+    ...
+*/
 unsigned char broadcast[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}; // Default
 unsigned char my_ip[4] = {139, 162, 197, 68};
 unsigned char netmask[4] = {255, 255, 255, 0}; // ifconfig to obtain the netmask, /sbin/ifconfig
@@ -57,17 +56,20 @@ Source MAC address: 6 bytes
 EtherType: 2 bytes
 Payload: 46-1482 bytes
 */
-struct eth_frame {
-    unsigned char dst[6]; // Destination MAC address
-    unsigned char src[6]; // Source MAC address
-    unsigned short type; // EtherType field to indicate the protocol of the payload (e.g., 0x0800 for IP, 0x0806 for ARP) - aka ULP field
+struct eth_frame
+{
+    unsigned char dst[6];     // Destination MAC address
+    unsigned char src[6];     // Source MAC address
+    unsigned short type;      // EtherType field to indicate the protocol of the payload (e.g., 0x0800 for IP, 0x0806 for ARP) - aka ULP field
     unsigned char payload[1]; // We are interested only on the first byte
 };
 
-void forge_ethernet (struct eth_frame * eth, unsigned char * dest_addr, unsigned short type) {
-    for (int i = 0; i < 6; i++) {
+void forge_ethernet(struct eth_frame *eth, unsigned char *dest_addr, unsigned short type)
+{
+    for (int i = 0; i < 6; i++)
+    {
         eth->src[i] = my_mac[i];
-        eth->dst[i] = dest_addr[i]; 
+        eth->dst[i] = dest_addr[i];
     }
     eth->type = htons(type); // We must swap the bytes
 }
@@ -83,11 +85,11 @@ Resolution protocol is needed.  The format of the packet follows.
          the user):
         48.bit: Ethernet address of destination (6 bytes)
         48.bit: Ethernet address of sender (6 bytes)
-        16.bit: Protocol type = ether_type$ADDRESS_RESOLUTION 
+        16.bit: Protocol type = ether_type$ADDRESS_RESOLUTION
 ---------------------------------------------------------------------
     Ethernet packet data:
         16.bit: (ar$hrd) Hardware address space (e.g., Ethernet,
-                         Packet Radio Net.) 
+                         Packet Radio Net.)
         16.bit: (ar$pro) Protocol address space.  For Ethernet
                          hardware, this is from the set of type
                          fields ether_typ$<protocol>.
@@ -102,54 +104,62 @@ Resolution protocol is needed.  The format of the packet follows.
                          packet (if known).
         mbytes: (ar$tpa) Protocol address of target.
 */
-struct arp_packet {
-    unsigned short htype; // Hardware type
-    unsigned short ptype; // Protocol type
-    unsigned char hlen; // Hardware address length
-    unsigned char plen; // Protocol address length
-    unsigned short op; // Opcode
+struct arp_packet
+{
+    unsigned short htype;     // Hardware type
+    unsigned short ptype;     // Protocol type
+    unsigned char hlen;       // Hardware address length
+    unsigned char plen;       // Protocol address length
+    unsigned short op;        // Opcode
     unsigned char src_mac[6]; // Sender MAC address
-    unsigned char src_ip[4]; // Sender IP address
+    unsigned char src_ip[4];  // Sender IP address
     unsigned char dst_mac[6]; // Target MAC address
-    unsigned char dst_ip[4]; // Target IP address
+    unsigned char dst_ip[4];  // Target IP address
 };
 
-void forge_arp_request (struct arp_packet * arp, unsigned char * dest_ip ) {
-    arp->htype = htons(1); // Hardware type: Ethernet = 1, we must swap the bytes because the field is in big endian, but we are in little endian
+void forge_arp_request(struct arp_packet *arp, unsigned char *dest_ip)
+{
+    arp->htype = htons(1);      // Hardware type: Ethernet = 1, we must swap the bytes because the field is in big endian, but we are in little endian
     arp->ptype = htons(0x0800); // Protocol type: IP = 0x0800, ARP = 0x0806
-    arp->hlen = 6; // Hardware address length: 6 bytes for Ethernet
-    arp->plen = 4; // Protocol address length: 4 bytes for IP
-    arp->op = htons(1); // Opcode: REQUEST = 1, REPLY = 2
+    arp->hlen = 6;              // Hardware address length: 6 bytes for Ethernet
+    arp->plen = 4;              // Protocol address length: 4 bytes for IP
+    arp->op = htons(1);         // Opcode: REQUEST = 1, REPLY = 2
 
-    for (int i = 0; i < 6; i++) {
+    for (int i = 0; i < 6; i++)
+    {
         arp->src_mac[i] = my_mac[i]; // Set the sender MAC address of the ARP request with our MAC address
     }
-    for (int i = 0; i < 4; i++) {
+    for (int i = 0; i < 4; i++)
+    {
         arp->src_ip[i] = my_ip[i]; // Set the sender IP address of the ARP request with our IP address
     }
-    for (int i = 0; i < 6; i++) {
+    for (int i = 0; i < 6; i++)
+    {
         arp->dst_mac[i] = 0; // Set the target MAC address of the ARP request to 00:00:00:00:00:00, because we don't know it yet
     }
-    for (int i = 0; i < 4; i++) {
+    for (int i = 0; i < 4; i++)
+    {
         arp->dst_ip[i] = dest_ip[i]; // Set the target IP address of the ARP request with the destination IP address passed as parameter
     }
 }
 
-/* 
+/*
 The checksum algorithm is:
 
     The checksum field is the 16 bit one's complement of the one's
     complement sum of all 16 bit words in the header.  For purposes of
     computing the checksum, the value of the checksum field is zero.
 */
-unsigned short checksum(unsigned char * b, int len) { // Buffer and length of the buffer
-    unsigned short *p = (unsigned short *) b;
+unsigned short checksum(unsigned char *b, int len)
+{ // Buffer and length of the buffer
+    unsigned short *p = (unsigned short *)b;
     unsigned short tot = 0;
     unsigned short prev = 0;
-    for (int i = 0; i < len/2; i++) {
+    for (int i = 0; i < len / 2; i++)
+    {
         tot += ntohs(p[i]); // We swap the bytes, header is in big endian, but we are in little endian
-        if (prev > tot) // If the sum is less than the previous value, we have an overflow, we must add 1 to the sum
-            tot ++;
+        if (prev > tot)     // If the sum is less than the previous value, we have an overflow, we must add 1 to the sum
+            tot++;
         prev = tot; // We update the previous value
     }
     return (0xFFFF - tot); // We return the one's complement of the sum, we must swap the bytes again, because the checksum is in big endian (we do it in the function that call the checksum)
@@ -170,9 +180,9 @@ IHL:  4 bits
 Type of Service:  8 bits
 
     The Type of Service provides an indication of the abstract
-    parameters of the quality of service desired, used to guide 
-    the selection of the actual service parameters when transmitting a 
-    datagram through a particular network. 
+    parameters of the quality of service desired, used to guide
+    the selection of the actual service parameters when transmitting a
+    datagram through a particular network.
 
       Bits 0-2:  Precedence.
       Bit    3:  0 = Normal Delay,      1 = Low Delay.
@@ -247,7 +257,7 @@ Protocol:  8 bits
 
 Header Checksum:  16 bits
 
-    Since some header fields change (e.g., time to live), this is recomputed 
+    Since some header fields change (e.g., time to live), this is recomputed
     and verified at each point that the internet header is processed.
 
     The checksum algorithm is:
@@ -262,28 +272,30 @@ Source Address:  32 bits
 
 Destination Address:  32 bits
 */
-struct ip_datagram {
-    unsigned char ver_ihl; // Version and Internet Header Length - 4bits + 4 bits -> char
-    unsigned char tos; // Type of Service  
-    unsigned short totlen; // Total Length of the datagram (header + payload)
-    unsigned short id; // Identification
+struct ip_datagram
+{
+    unsigned char ver_ihl;     // Version and Internet Header Length - 4bits + 4 bits -> char
+    unsigned char tos;         // Type of Service
+    unsigned short totlen;     // Total Length of the datagram (header + payload)
+    unsigned short id;         // Identification
     unsigned short flags_offs; // Flags and Fragment Offset - 3bits + 13bits -> short
-    unsigned char ttl; // Time To Live
-    unsigned char proto; //Upper layer protocol
-    unsigned short checksum; // Header checksum
-    unsigned int srcip; // Source IP address
-    unsigned int dstip; // Destination IP address
-    unsigned char payload[1]; // We are interested only on the first byte, we can put data inside the payload
+    unsigned char ttl;         // Time To Live
+    unsigned char proto;       // Upper layer protocol
+    unsigned short checksum;   // Header checksum
+    unsigned int srcip;        // Source IP address
+    unsigned int dstip;        // Destination IP address
+    unsigned char payload[1];  // We are interested only on the first byte, we can put data inside the payload
 };
 
-void forge_ip (struct ip_datagram * ip, char * target_ip, char protocol, unsigned short payload_len) {
+void forge_ip(struct ip_datagram *ip, char *target_ip, char protocol, unsigned short payload_len)
+{
     ip->ver_ihl = 0x45; // Version: IPv4, IHL: 5 (20 bytes) we can also write it as (4 << 4) | 5, but it's more clear to write it in hex
     ip->tos = 0;
     ip->totlen = htons(20 + payload_len); // 20 bytes: minimum header length, payload_len: length of the payload
-    ip->id = htons(0x1234); // Identification, it can be random
-    ip->flags_offs = htons(0); // Now it is 0x0000, May fragment, last fragment, offset 0
-    ip->ttl = 128; // Time to live - normal value 128
-    ip->proto = protocol; // Protocol (e.g. TCP, UDP, ICMP, ecc...) upper layer protocol we use ICMP : 1
+    ip->id = htons(0x1234);               // Identification, it can be random
+    ip->flags_offs = htons(0);            // Now it is 0x0000, May fragment, last fragment, offset 0
+    ip->ttl = 128;                        // Time to live - normal value 128
+    ip->proto = protocol;                 // Protocol (e.g. TCP, UDP, ICMP, ecc...) upper layer protocol we use ICMP : 1
 
     // The checksum is part of the packet
     // The value of the checksum is zero, before computing it
@@ -293,7 +305,7 @@ void forge_ip (struct ip_datagram * ip, char * target_ip, char protocol, unsigne
     ip->srcip = *(unsigned int *)my_ip;
 
     // Set the destination IP address
-    ip->dstip = *(unsigned int*)target_ip;
+    ip->dstip = *(unsigned int *)target_ip;
 
     // We overwrite the checksum as the rfc says
     ip->checksum = htons(checksum((unsigned char *)ip, 20));
@@ -343,21 +355,23 @@ Sequence Number - 2 bytes -> short
     but it is common to use seq = 0 if the code is 0
 */
 // The identifier: specific for a given session - ping session
-struct icmp_message {
-    unsigned char type; // Type of the ICMP message
-    unsigned char code; // Code of the ICMP message
-    unsigned short checksum; // Checksum of the ICMP message
-    unsigned short id; // Identifier of the ICMP message
-    unsigned short seq; // Sequence number of the ICMP message
+struct icmp_message
+{
+    unsigned char type;       // Type of the ICMP message
+    unsigned char code;       // Code of the ICMP message
+    unsigned short checksum;  // Checksum of the ICMP message
+    unsigned short id;        // Identifier of the ICMP message
+    unsigned short seq;       // Sequence number of the ICMP message
     unsigned char payload[1]; // Payload of the ICMP message
 };
 
-void forge_icmp(struct icmp_message * icmp) {
-    icmp->type = 8; // Echo request message, for echo reply message we must set it to 0
-    icmp->code = 0; // No need for icmp
-    icmp->checksum = 0; // Overwrite it later;
+void forge_icmp(struct icmp_message *icmp)
+{
+    icmp->type = 8;           // Echo request message, for echo reply message we must set it to 0
+    icmp->code = 0;           // No need for icmp
+    icmp->checksum = 0;       // Overwrite it later;
     icmp->id = htons(0xABCD); // Identifier, it can be random, but it is common to use 0 if code is 0
-    icmp->seq = htons(1); // Sequence number, it can be random, but it is common to use 0 if code is 0
+    icmp->seq = htons(1);     // Sequence number, it can be random, but it is common to use 0 if code is 0
 
     // Why we should put some data inside a ping request? Which data we have to put inside?
     // In general: if we want to test the nwtwork we must try different size of the packet, test round trip time, fragmentation ecc...
@@ -365,21 +379,22 @@ void forge_icmp(struct icmp_message * icmp) {
     for (int i = 0; i < 20; i++)
         icmp->payload[i] = i;
 
-    icmp->checksum = htons(checksum((unsigned char *)icmp, 8+20));
+    icmp->checksum = htons(checksum((unsigned char *)icmp, 8 + 20));
 }
 
 // Socket address structure for the link layer (Ethernet)
-struct sockaddr_ll sll; 
+struct sockaddr_ll sll;
 
 // Socket descriptor
 int s;
 
 // Counter for printing the bytes of the packet
-int count = 0; 
+int count = 0;
 
-int resolve_ip (unsigned char * target_ip, unsigned char * target_mac);
+int resolve_ip(unsigned char *target_ip, unsigned char *target_mac);
 
-int main() {
+int main()
+{
     // Local // unsigned char target_ip[4] = {139, 162, 197, 70};
     unsigned char target_ip[4] = {194, 244, 10, 164};
     unsigned char target_mac[6];
@@ -391,30 +406,33 @@ int main() {
     // Length of the sockaddr_ll structure
     int structlen;
 
-    struct eth_frame * eth = (struct eth_frame *) buffer;
-    struct ip_datagram * ip = (struct ip_datagram *) eth->payload;
-    struct icmp_message * icmp = (struct icmp_message *) ip->payload;
+    struct eth_frame *eth = (struct eth_frame *)buffer;
+    struct ip_datagram *ip = (struct ip_datagram *)eth->payload;
+    struct icmp_message *icmp = (struct icmp_message *)ip->payload;
 
     forge_icmp(icmp);
     /*
-        Protocol = 1 = ICMP, 
+        Protocol = 1 = ICMP,
         payload_length = 8 + 20
             8 bytes for the ICMP header
             20 bytes for the ICMP payload
     */
-    forge_ip(ip, target_ip, 1, 8 + 20); 
+    forge_ip(ip, target_ip, 1, 8 + 20);
 
     // Compare my_ip masked with the target_ip masked and if they are equal we are in the same network
-    if (((*(unsigned int *) target_ip) & (*(unsigned int *) netmask)) == ((*(unsigned int *) my_ip) & (*(unsigned int *) netmask))) {
+    if (((*(unsigned int *)target_ip) & (*(unsigned int *)netmask)) == ((*(unsigned int *)my_ip) & (*(unsigned int *)netmask)))
+    {
         resolve_ip(target_ip, target_mac);
-    } else {
+    }
+    else
+    {
         resolve_ip(gateway, target_mac);
     }
 
     printf("\n\nResolved MAC is...\n");
 
     for (int i = 0; i < 6; i++)
-        printf("%.2X (%.3d) ", target_mac[i], target_mac[i]);  
+        printf("%.2X (%.3d) ", target_mac[i], target_mac[i]);
     printf("\n");
 
     forge_ethernet(eth, target_mac, 0x0800); // type = 0x0800 for the IP packet
@@ -437,7 +455,8 @@ int main() {
     */
     printf("\n\nEcho Request over IP over Ethernet...\n");
     count = 0;
-    for (int i = 0; i < 14+20+8+20; i++) {
+    for (int i = 0; i < 14 + 20 + 8 + 20; i++)
+    {
         printf("%.2X (%.3d) ", buffer[i], buffer[i]);
         count = (count == 8) ? 1 : count + 1;
         if (count == 8)
@@ -457,37 +476,45 @@ int main() {
     s = socket(AF_PACKET, SOCK_RAW, htons(ETH_P_ALL));
 
     // Check the creation of the socket
-    if (s == -1) {
+    if (s == -1)
+    {
         perror("Socket Failed");
         return -1;
     }
-  
-    // man 2 sendto               
-    size = sendto(s, buffer, 14 + 20 + 8 + 20, 0, (struct sockaddr *) &sll, structlen);
 
-    if (size == -1) {
+    // man 2 sendto
+    size = sendto(s, buffer, 14 + 20 + 8 + 20, 0, (struct sockaddr *)&sll, structlen);
+
+    if (size == -1)
+    {
         perror("Sendto Failed");
         return -1;
     }
 
     for (int i = 0; i < structlen; i++)
         ((char *)&sll)[i] = 0; // We reset all the bytes to zero
-    
-    for (int i = 0; i < 1000; i++) {
+
+    for (int i = 0; i < 1000; i++)
+    {
         // man 2 recvfrom
         size = recvfrom(s, buffer, 1500, 0, (struct sockaddr *)&sll, &structlen);
-        if (size == -1) {
+        if (size == -1)
+        {
             perror("Recvfrom Failed");
             return -1;
         }
-        if (eth->type == ntohs(0x0800)) {
+        if (eth->type == ntohs(0x0800))
+        {
             // When we are inside this if body we are in the ip layer, and we are receiving only ip packet
-            if (ip->proto == 1) {
+            if (ip->proto == 1)
+            {
                 // When we are inside this if body we are in the icmp layer, and we are receiving only icmp packet
-                if (icmp->type == 0) {
+                if (icmp->type == 0)
+                {
                     printf("\n\nEcho Reply received...\n");
                     count = 0;
-                    for (int j = 0; j < size; j++) {
+                    for (int j = 0; j < size; j++)
+                    {
                         printf("%.2X (%.3d) ", buffer[j], buffer[j]);
                         count = (count == 8) ? 1 : count + 1;
                         if (count == 8)
@@ -501,7 +528,8 @@ int main() {
     }
 }
 
-int resolve_ip(unsigned char * target_ip, unsigned char * target_mac) {
+int resolve_ip(unsigned char *target_ip, unsigned char *target_mac)
+{
     printf("\nResolving IP address...\n");
 
     // Size of the packet sent or received
@@ -513,8 +541,8 @@ int resolve_ip(unsigned char * target_ip, unsigned char * target_mac) {
     // Buffer for the packet
     unsigned char buf[1500];
 
-    struct eth_frame * eth = (struct eth_frame *) buf;
-    struct arp_packet * arp = (struct arp_packet *) eth->payload; // or (*eth).payload
+    struct eth_frame *eth = (struct eth_frame *)buf;
+    struct arp_packet *arp = (struct arp_packet *)eth->payload; // or (*eth).payload
 
     // 0x0806 value of ULP for arp packet
     forge_ethernet(eth, broadcast, 0x0806);
@@ -524,10 +552,11 @@ int resolve_ip(unsigned char * target_ip, unsigned char * target_mac) {
 
     printf("\nARP request prepared...\n");
     count = 0;
-    // Why 14? Because the Ethernet header is 14 bytes, and the arp packet is after the Ethernet header, 
-    // so we must start to print from the first byte of the Ethernet header, and we must print all the bytes 
+    // Why 14? Because the Ethernet header is 14 bytes, and the arp packet is after the Ethernet header,
+    // so we must start to print from the first byte of the Ethernet header, and we must print all the bytes
     // of the Ethernet header and all the bytes of the arp packet, so we must print 14 + sizeof(struct arp_packet) bytes
-    for (int i = 0; i < 14 + sizeof(struct arp_packet); i++) {
+    for (int i = 0; i < 14 + sizeof(struct arp_packet); i++)
+    {
         printf("%.2X (%.3d) ", buf[i], buf[i]);
         count = (count == 8) ? 1 : count + 1;
         if (count == 8)
@@ -538,7 +567,8 @@ int resolve_ip(unsigned char * target_ip, unsigned char * target_mac) {
     structlen = sizeof(struct sockaddr_ll);
 
     // Clean the structure
-    for (int i = 0; i < structlen; i++) {
+    for (int i = 0; i < structlen; i++)
+    {
         ((char *)&sll)[i] = 0; // We reset all the bytes to zero
     }
 
@@ -550,27 +580,29 @@ int resolve_ip(unsigned char * target_ip, unsigned char * target_mac) {
     s = socket(AF_PACKET, SOCK_RAW, htons(ETH_P_ALL));
 
     // Check the creation of the socket
-    if (s == -1) {
+    if (s == -1)
+    {
         perror("Socket Failed");
         return -1;
     }
 
     /* man 2 sendto
-    Must include 
+    Must include
         <sys/socket.h>
 
     ssize_t sendto(
-        int socket, 
-        const void *buffer, 
-        size_t length, 
-        int flags, 
-        const struct sockaddr *dest_addr, 
+        int socket,
+        const void *buffer,
+        size_t length,
+        int flags,
+        const struct sockaddr *dest_addr,
         socklen_t dest_len
     );
     */
-    size = sendto(s, buf, 14 + sizeof(struct arp_packet), 0, (struct sockaddr *) &sll, structlen);
+    size = sendto(s, buf, 14 + sizeof(struct arp_packet), 0, (struct sockaddr *)&sll, structlen);
 
-    if (size == -1) {
+    if (size == -1)
+    {
         perror("Sendto Failed");
         return -1;
     }
@@ -578,7 +610,8 @@ int resolve_ip(unsigned char * target_ip, unsigned char * target_mac) {
     printf("Sending ARP request (size %d)...\n", size);
 
     // Clean the structure
-    for (int i = 0; i < structlen; i++) {
+    for (int i = 0; i < structlen; i++)
+    {
         ((char *)&sll)[i] = 0; // We reset all the bytes to zero
     }
 
@@ -587,7 +620,7 @@ int resolve_ip(unsigned char * target_ip, unsigned char * target_mac) {
     sll.sll_ifindex = if_nametoindex("eth0");
 
     /* man 2 recvfrom
-    Must include: 
+    Must include:
         #include <sys/types.h>
         #include <sys/socket.h>
 
@@ -601,19 +634,24 @@ int resolve_ip(unsigned char * target_ip, unsigned char * target_mac) {
     );
     */
 
-    for (int i = 0; i < 1000; i++) {
-        size = recvfrom (s, buf, 1500, 0, (struct sockaddr *)&sll, &structlen);
-        if (size == -1) {
+    for (int i = 0; i < 1000; i++)
+    {
+        size = recvfrom(s, buf, 1500, 0, (struct sockaddr *)&sll, &structlen);
+        if (size == -1)
+        {
             perror("Recvfrom Failed");
             return -1;
         }
-        if (eth->type == htons(0x0806)) {
+        if (eth->type == htons(0x0806))
+        {
             // When we are inside this if body we are the arp layer and we are receving only arp packets
-            if (arp->op == htons(0x0002)) {
+            if (arp->op == htons(0x0002))
+            {
                 // When we are inside this if body we are receiving only ARP reply
                 printf("\nARP response received (size = %d)...\n", size);
-                count = 0; 
-                for (int i = 0; i < size; i++) {
+                count = 0;
+                for (int i = 0; i < size; i++)
+                {
                     printf("%.2X (%.3d) ", buf[i], buf[i]);
                     count = (count == 8) ? 1 : count + 1;
                     if (count == 8)

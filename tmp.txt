@@ -1,0 +1,16 @@
+
+topic_id	Q0	document_id	    rank	score	run_id
+41	        Q0	DOC1	        1	    12.40	bm25_run
+41	        Q0	DOC2	        2	    11.10	bm25_run
+41	        Q0	DOC7	        3	    9.20	bm25_run
+41	        Q0	DOC2	        1	    0.91	neural_run
+41	        Q0	DOC4	        2	    0.87	neural_run
+41	        Q0	DOC1	        3	    0.70	neural_run
+...
+42	        Q0	DOC1	        1	    10.30	bm25_run
+42	        Q0	DOC8	        2	    8.90	bm25_run
+42	        Q0	DOC3	        3	    7.50	bm25_run
+42	        Q0	DOC8	        1	    0.95	neural_run
+42	        Q0	DOC1	        2	    0.75	neural_run
+42	        Q0	DOC5	        3	    0.62	neural_run
+

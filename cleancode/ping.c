@@ -1,14 +1,16 @@
 /*
-READEME:
-    Modify the ping.c program to implement a "traceroute" program. 
-    The program sends many ip packets destined to 147.162.2.100 having an increasing TTL value from 1 to 30 
-    and reports the list of the IP addresses of the gateways encountered in the network path. 
+README: 
+    This code is a simple implementation of the ping command using raw sockets in C. 
+    It creates an ICMP echo request packet, encapsulates it in an IP datagram, and then 
+    encapsulates it in an Ethernet frame. It then sends the packet to the target IP 
+    address and waits for an ICMP echo reply. The code also includes a function to resolve 
+    the MAC address of the target IP address using ARP.
 
 To compile the code, use the following command:
-    gcc traceroute.c -o np
+    gcc ping.c -o np
 */
 
-#include <sys/time.h> // Include the sys/time.h header for timer-related functions and structures
+
 #include <sys/types.h>
 #include <errno.h> // man 3 perror
 #include <arpa/inet.h> //used for htons (from Big Endian to Little Endian)
@@ -50,8 +52,6 @@ unsigned char netmask[4] = {255, 255, 255, 0}; // ifconfig to obtain the netmask
 unsigned char gateway[4] = {139, 162, 197, 1};
 
 /*
-Minimum size: 6 + 6 + 2 = 14 bytes for the Ethernet header
-
 Destination MAC address: 6 bytes
 Source MAC address: 6 bytes
 EtherType: 2 bytes
@@ -156,25 +156,6 @@ unsigned short checksum(unsigned char * b, int len) { // Buffer and length of th
 }
 
 /* https://datatracker.ietf.org/doc/html/rfc791#ref-9 - Internet Header Format
-
-A summary of the contents of the internet header follows:
-
-    0                   1                   2                   3
-    0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
-   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-   |Version|  IHL  |Type of Service|          Total Length         |
-   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-   |         Identification        |Flags|      Fragment Offset    |
-   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-   |  Time to Live |    Protocol   |         Header Checksum       |
-   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-   |                       Source Address                          |
-   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-   |                    Destination Address                        |
-   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-   |                    Options                    |    Padding    |
-   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-
 Version:  4 bits
 
     The Version field indicates the format of the internet header.  This
@@ -295,22 +276,13 @@ struct ip_datagram {
     unsigned char payload[1]; // We are interested only on the first byte, we can put data inside the payload
 };
 
-// Exercise 8.6 - "[...] having an increasing TTL value from 1 to 30  [...]"
-void forge_ip (struct ip_datagram * ip, char * target_ip, char protocol, unsigned short payload_len, unsigned char ttl, unsigned short id) {
+void forge_ip (struct ip_datagram * ip, char * target_ip, char protocol, unsigned short payload_len) {
     ip->ver_ihl = 0x45; // Version: IPv4, IHL: 5 (20 bytes) we can also write it as (4 << 4) | 5, but it's more clear to write it in hex
     ip->tos = 0;
     ip->totlen = htons(20 + payload_len); // 20 bytes: minimum header length, payload_len: length of the payload
-    //ip->id = htons(0); // Identification, it can be random
-
-    // --> Modified for Exercise 8.6
-    ip->id = htons(id); // Identification, it can be random
-
+    ip->id = htons(0x1234); // Identification, it can be random
     ip->flags_offs = htons(0); // Now it is 0x0000, May fragment, last fragment, offset 0
-    //ip->ttl = 128; // Time to live - normal value 128
-
-    // --> Modified for Exercise 8.6
-    ip->ttl = ttl; // Time to live - we set it to the value of the variable ttl, that we will increase in the main function
-
+    ip->ttl = 128; // Time to live - normal value 128
     ip->proto = protocol; // Protocol (e.g. TCP, UDP, ICMP, ecc...) upper layer protocol we use ICMP : 1
 
     // The checksum is part of the packet
@@ -380,16 +352,12 @@ struct icmp_message {
     unsigned char payload[1]; // Payload of the ICMP message
 };
 
-void forge_icmp(struct icmp_message * icmp, unsigned short id, unsigned short seq) {
+void forge_icmp(struct icmp_message * icmp) {
     icmp->type = 8; // Echo request message, for echo reply message we must set it to 0
     icmp->code = 0; // No need for icmp
     icmp->checksum = 0; // Overwrite it later;
-    //icmp->id = htons(0xABCD); // Identifier, it can be random, but it is common to use 0 if code is 0
-    //icmp->seq = htons(1); // Sequence number, it can be random, but it is common to use 0 if code is 0
-
-    // --> Modified for Exercise 8.6
-    icmp->id = htons(id);
-    icmp->seq = htons(seq); 
+    icmp->id = htons(0xABCD); // Identifier, it can be random, but it is common to use 0 if code is 0
+    icmp->seq = htons(1); // Sequence number, it can be random, but it is common to use 0 if code is 0
 
     // Why we should put some data inside a ping request? Which data we have to put inside?
     // In general: if we want to test the nwtwork we must try different size of the packet, test round trip time, fragmentation ecc...
@@ -400,14 +368,6 @@ void forge_icmp(struct icmp_message * icmp, unsigned short id, unsigned short se
     icmp->checksum = htons(checksum((unsigned char *)icmp, 8+20));
 }
 
-struct time_exceeded_message {
-    unsigned char type; 
-    unsigned char code; 
-    unsigned short checksum;
-    unsigned char unused[4]; // Unused field, must be set to zero
-    unsigned char payload[1]; 
-};
-
 // Socket address structure for the link layer (Ethernet)
 struct sockaddr_ll sll; 
 
@@ -416,6 +376,130 @@ int s;
 
 // Counter for printing the bytes of the packet
 int count = 0; 
+
+int resolve_ip (unsigned char * target_ip, unsigned char * target_mac);
+
+int main() {
+    // Local // unsigned char target_ip[4] = {139, 162, 197, 70};
+    unsigned char target_ip[4] = {194, 244, 10, 164};
+    unsigned char target_mac[6];
+    unsigned char buffer[1500];
+
+    // Size of the packet sent or received
+    int size;
+
+    // Length of the sockaddr_ll structure
+    int structlen;
+
+    struct eth_frame * eth = (struct eth_frame *) buffer;
+    struct ip_datagram * ip = (struct ip_datagram *) eth->payload;
+    struct icmp_message * icmp = (struct icmp_message *) ip->payload;
+
+    forge_icmp(icmp);
+    /*
+        Protocol = 1 = ICMP, 
+        payload_length = 8 + 20
+            8 bytes for the ICMP header
+            20 bytes for the ICMP payload
+    */
+    forge_ip(ip, target_ip, 1, 8 + 20); 
+
+    // Compare my_ip masked with the target_ip masked and if they are equal we are in the same network
+    if (((*(unsigned int *) target_ip) & (*(unsigned int *) netmask)) == ((*(unsigned int *) my_ip) & (*(unsigned int *) netmask))) {
+        resolve_ip(target_ip, target_mac);
+    } else {
+        resolve_ip(gateway, target_mac);
+    }
+
+    printf("\n\nResolved MAC is...\n");
+
+    for (int i = 0; i < 6; i++)
+        printf("%.2X (%.3d) ", target_mac[i], target_mac[i]);  
+    printf("\n");
+
+    forge_ethernet(eth, target_mac, 0x0800); // type = 0x0800 for the IP packet
+
+    /*
+        14 bytes for the Ethernet header
+            6 bytes for the destination MAC address
+            6 bytes for the source MAC address
+            2 bytes for the EtherType field
+        20 bytes for the IP header
+            The IPV4 minimum header length is 20 bytes (0x45)
+        8 bytes for the ICMP header
+            1 byte for the type
+            1 byte for the code
+            2 bytes for the checksum
+            2 bytes for the identifier
+            2 bytes for the sequence number
+        20 bytes for the ICMP payload
+            20 bytes for the ICMP payload - We choose to put 20 bytes of data inside the ICMP payload, but we can choose any size for the payload
+    */
+    printf("\n\nEcho Request over IP over Ethernet...\n");
+    count = 0;
+    for (int i = 0; i < 14+20+8+20; i++) {
+        printf("%.2X (%.3d) ", buffer[i], buffer[i]);
+        count = (count == 8) ? 1 : count + 1;
+        if (count == 8)
+            printf("\n");
+    }
+    printf("\n");
+
+    structlen = sizeof(struct sockaddr_ll);
+
+    for (int i = 0; i < structlen; i++)
+        ((char *)&sll)[i] = 0; // We reset all the bytes to zero
+
+    sll.sll_family = AF_PACKET;
+    sll.sll_ifindex = if_nametoindex("eth0");
+
+    // Socket creation
+    s = socket(AF_PACKET, SOCK_RAW, htons(ETH_P_ALL));
+
+    // Check the creation of the socket
+    if (s == -1) {
+        perror("Socket Failed");
+        return -1;
+    }
+  
+    // man 2 sendto               
+    size = sendto(s, buffer, 14 + 20 + 8 + 20, 0, (struct sockaddr *) &sll, structlen);
+
+    if (size == -1) {
+        perror("Sendto Failed");
+        return -1;
+    }
+
+    for (int i = 0; i < structlen; i++)
+        ((char *)&sll)[i] = 0; // We reset all the bytes to zero
+    
+    for (int i = 0; i < 1000; i++) {
+        // man 2 recvfrom
+        size = recvfrom(s, buffer, 1500, 0, (struct sockaddr *)&sll, &structlen);
+        if (size == -1) {
+            perror("Recvfrom Failed");
+            return -1;
+        }
+        if (eth->type == ntohs(0x0800)) {
+            // When we are inside this if body we are in the ip layer, and we are receiving only ip packet
+            if (ip->proto == 1) {
+                // When we are inside this if body we are in the icmp layer, and we are receiving only icmp packet
+                if (icmp->type == 0) {
+                    printf("\n\nEcho Reply received...\n");
+                    count = 0;
+                    for (int j = 0; j < size; j++) {
+                        printf("%.2X (%.3d) ", buffer[j], buffer[j]);
+                        count = (count == 8) ? 1 : count + 1;
+                        if (count == 8)
+                            printf("\n");
+                    }
+                    printf("\n");
+                    return 0;
+                }
+            }
+        }
+    }
+}
 
 int resolve_ip(unsigned char * target_ip, unsigned char * target_mac) {
     printf("\nResolving IP address...\n");
@@ -471,7 +555,7 @@ int resolve_ip(unsigned char * target_ip, unsigned char * target_mac) {
         return -1;
     }
 
-    /* man 2 sendto - Invio della ARP request
+    /* man 2 sendto
     Must include 
         <sys/socket.h>
 
@@ -544,278 +628,50 @@ int resolve_ip(unsigned char * target_ip, unsigned char * target_mac) {
     }
     return 0;
 }
+/*
+OUTPUT:
+Resolving IP address...
 
-int main() {
-    unsigned char target_ip[4] = {147, 162, 2, 100};
-    unsigned char target_mac[6];
-    unsigned char buffer[1500];
+ARP request prepared...
+FF (255) FF (255) FF (255) FF (255) FF (255) FF (255) 22 (034) 00 (000) 
+B6 (182) EC (236) 6A (106) 3C (060) 08 (008) 06 (006) 00 (000) 01 (001) 
+08 (008) 00 (000) 06 (006) 04 (004) 00 (000) 01 (001) 22 (034) 00 (000) 
+B6 (182) EC (236) 6A (106) 3C (060) 8B (139) A2 (162) C5 (197) 44 (068) 
+00 (000) 00 (000) 00 (000) 00 (000) 00 (000) 00 (000) 8B (139) A2 (162) 
+C5 (197) 01 (001) 
+Sending ARP request (size 42)...
 
-    int size;
-    int structlen;
+ARP response received (size = 42)...
+22 (034) 00 (000) B6 (182) EC (236) 6A (106) 3C (060) FE (254) FF (255) 
+FF (255) FF (255) FF (255) FF (255) 08 (008) 06 (006) 00 (000) 01 (001) 
+08 (008) 00 (000) 06 (006) 04 (004) 00 (000) 02 (002) FE (254) FF (255) 
+FF (255) FF (255) FF (255) FF (255) 8B (139) A2 (162) C5 (197) 01 (001) 
+22 (034) 00 (000) B6 (182) EC (236) 6A (106) 3C (060) 8B (139) A2 (162) 
+C5 (197) 44 (068) 
 
-    unsigned char ttl;
-    unsigned short session_id = 0xABCD; // Defined session id
-    unsigned short ip_id = 0;
-    unsigned short seq;
 
-    struct timeval tv;
-    tv.tv_sec = 1;
-    tv.tv_usec = 0;
+Resolved MAC is...
+FE (254) FF (255) FF (255) FF (255) FF (255) FF (255) 
 
-    struct eth_frame *eth = (struct eth_frame *)buffer;
-    struct ip_datagram *ip = (struct ip_datagram *)eth->payload;
-    struct icmp_message *icmp = (struct icmp_message *)ip->payload;
 
-    if (((*(unsigned int *)target_ip) & (*(unsigned int *)netmask)) == ((*(unsigned int *)my_ip) & (*(unsigned int *)netmask))) {
-        printf("\nThe target IP address is in the same subnet of the node, we can resolve the MAC address of the target IP address...\n");
-        resolve_ip(target_ip, target_mac);
-    } else {
-        printf("\nThe target IP address is not in the same subnet of the node, we must resolve the MAC address of the gateway...\n");
-        resolve_ip(gateway, target_mac);
-    }
+Echo Request over IP over Ethernet...
+FE (254) FF (255) FF (255) FF (255) FF (255) FF (255) 22 (034) 00 (000) 
+B6 (182) EC (236) 6A (106) 3C (060) 08 (008) 00 (000) 45 (069) 00 (000) 
+00 (000) 30 (048) 12 (018) 34 (052) 00 (000) 00 (000) 80 (128) 01 (001) 
+0A (010) 1A (026) 8B (139) A2 (162) C5 (197) 44 (068) C2 (194) F4 (244) 
+0A (010) A4 (164) 08 (008) 00 (000) F1 (241) CC (204) AB (171) CD (205) 
+00 (000) 01 (001) 00 (000) 01 (001) 02 (002) 03 (003) 04 (004) 05 (005) 
+06 (006) 07 (007) 08 (008) 09 (009) 0A (010) 0B (011) 0C (012) 0D (013) 
+0E (014) 0F (015) 10 (016) 11 (017) 12 (018) 13 (019) 
 
-    printf("\nTraceroute to %d.%d.%d.%d\n", target_ip[0], target_ip[1], target_ip[2], target_ip[3]);
 
-    structlen = sizeof(struct sockaddr_ll);
-
-    for (int i = 0; i < structlen; i++)
-        ((char *)&sll)[i] = 0;
-
-    sll.sll_family = AF_PACKET;
-    sll.sll_ifindex = if_nametoindex("eth0");
-
-    s = socket(AF_PACKET, SOCK_RAW, htons(ETH_P_ALL));
-    if (s == -1) {
-        perror("Socket Failed");
-        return -1;
-    }
-
-    if (setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) == -1) {
-        perror("setsockopt failed");
-        return -1;
-    }
-
-    for (ttl = 1; ttl <= 30; ttl++) {
-        /*
-        hop_found = 0 means that we haven't received a reply from the target IP address
-        hop_found = 1 means that we have received a reply
-        */
-
-        int hop_found = 0;
-
-        // We set the sequence number of the ICMP message to the value of the global variable ttl
-        seq = ttl;
-        // We increase the IP identification field for each packet, to be able to distinguish the packets in the reply messages
-        ip_id++;
-
-        forge_icmp(icmp, session_id, seq);
-        forge_ip(ip, target_ip, 1, 8 + 20, ttl, ip_id);
-        forge_ethernet(eth, target_mac, 0x0800);
-
-        size = sendto(s, buffer, 14 + 20 + 8 + 20, 0, (struct sockaddr *)&sll, structlen);
-
-        if (size == -1) {
-            perror("Sendto Failed");
-            return -1;
-        }
-        
-        while (!hop_found) {
-            // eth_r is the Ethernet frame of the received packet
-            // outer_ip is the IP header of the received packet 
-            // outer_icmp is the ICMP message of the received packet 
-            // outer_ihl is the Internet Header Length of the received packet
-            struct eth_frame *eth_r;
-            struct ip_datagram *outer_ip;
-            struct icmp_message *outer_icmp;
-            unsigned char outer_ihl;
-
-            size = recvfrom(s, buffer, 1500, 0, NULL, NULL);
-
-            if (size == -1) {
-                // Dato che è stato impostato un timeout di ricezione e il timeout è scaduto prima che i dati venissero ricevuti. 
-                // La Socket restituisce EAGAIN oppure EWOULDBLOCK che indicano che non ci sono dati da leggere.
-                // In tutti gli altri casi di errore stampiamo l'errore ed unsciamo dal programma.
-                // man 3 errno
-                if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                    printf("%2d\t*\t\t\tThe error is EAGAIN or EWOULDBLOCK \n", ttl);
-                    break;
-                }
-                perror("Recvfrom Failed");
-                return -1;
-            }
-
-            /*
-            Road map of the received packet:
-
-            Ethernet
-            └── outer IP
-                └── outer ICMP
-                    ├── se type 11: contiene inner IP + inner ICMP originale
-                    └── se type 0: e' direttamente Echo Reply
-            */
-
-            /*
-            Check:
-                14 byte = header Ethernet
-                20 byte = header IP minimo
-                8 byte  = header ICMP minimo
-            */
-            if (size >= 14 + 20 + 8) {
-
-                // buffer contiene l'intero pacchetto ricevuto, quindi contiene:
-                //      - l'Ethernet header
-                //      - l'IP header
-                //      - l'ICMP header
-                //      - il payload dell'ICMP message
-                eth_r = (struct eth_frame *)buffer;
-
-                // 0x0800 value of ULP for IP packet
-                if (eth_r->type == htons(0x0800)) {
-                    // We are receiving an IP packet
-                    
-                    // Interpretiamo il payload dell'Ethernet frame come un IP datagram
-                    // Otteniamo il puntatore all'IP header del pacchetto ricevuto
-                    outer_ip = (struct ip_datagram *)eth_r->payload;
-
-                    // proto == 1 means that the upper layer protocol is ICMP
-                    /*
-                    Protocol field: 
-                        1 = ICMP
-                        6 = TCP
-                        17 = UDP
-                    */
-                    if (outer_ip->proto == 1) {
-                        // We are receiving an ICMP packet
-
-                        // Size of the recieved packet
-                        /*
-                        Version:  4 bits
-
-                            The Version field indicates the format of the internet header.  This
-                            document describes version 4.
-
-                        IHL:  4 bits
-
-                            Internet Header Length is the length of the internet header in 32
-                            bit words, and thus points to the beginning of the data.  Note that
-                            the minimum value for a correct header is 5.
-                        
-                        We must remove the first 4 bits of the ver_ihl field to obtain the IHL value
-                        since the IHL value is in the last 4 bits.
-                        We can do a bitwise AND with 0x0F to obtain only the last 4 bits
-                        then we must multiply it by 4 to obtain the length in bytes, 
-                        because the IHL value is in 32 bit words (4 bytes) 
-                        */
-                        outer_ihl = (outer_ip->ver_ihl & 0x0F) * 4;
-
-                        /*
-                        Check:
-                            14 byte = header Ethernet
-                            outer_ihl byte = header outer_ip calcolato
-                            8 byte  = header ICMP minimo
-                        */
-                        if (size >= 14 + outer_ihl + 8) {
-
-                            /*
-                            Assegno il puntatore all'ICMP message del pacchetto ricevuto, che si trova dopo l'IP header, 
-                            quindi dopo 14 byte (già considerati assegnando outer_ip = ... eth_r->payload;) di Ethernet 
-                            header e outer_ihl byte di IP header
-                            */
-                            outer_icmp = (struct icmp_message *)((unsigned char *)outer_ip + outer_ihl);
-
-                            // type == 11 means that the ICMP message is a Time Exceeded Message
-                            // type == 0 means that the ICMP message is an Echo Reply Message
-                            // code == 0 means that there is no code for Echo and Echo Reply Messages
-                            if (outer_icmp->type == 11 && outer_icmp->code == 0) {
-
-                                /*
-                                Un messaggio Time Exceeded contiene:
-
-                                ICMP Time Exceeded header
-                                └── IP originale che avevi inviato
-                                    └── primi 8 byte del payload originale
-                                */
-
-                                struct time_exceeded_message *tem;
-                                struct ip_datagram *inner_ip; 
-                                struct icmp_message *inner_icmp;
-                                unsigned char inner_ihl;
-
-                                /*
-                                Check:
-                                    14 byte = header Ethernet
-                                    outer_ihl byte = header outer_ip calcolato
-                                    8 byte  = header ICMP minimo
-                                    20 byte = header IP minimo (generico) 
-                                        -> potrebbe essere un header IP di qualsiasi pacchetto, 
-                                           non necessariamente il nostro ping request, ma se è più piccolo di 20 byte non possiamo processarlo
-                                */
-                                if (size >= 14 + outer_ihl + 8 + 20) {
-                                    // The payload of the Time Exceeded message contains the IP header and the first 8 bytes 
-                                    // of the payload of the original packet that caused the Time Exceeded message to be generated, 
-                                    // in this case our ping request, so we can check if the Time Exceeded message is a reply to 
-                                    // our ping request by checking the identifier and the sequence number of the inner ICMP message
-                                    tem = (struct time_exceeded_message *)outer_icmp; 
-                                    inner_ip = (struct ip_datagram *)tem->payload;
-
-                                    /*
-                                    We remove the first 4 bits of the ver_ihl field, obtain the IHL value (bitwise AND with 0x0F to obtain only the last 4 bits)
-                                    then we multiply it by 4 to obtain the length in bytes since the IHL value is in 32 bit words (4 bytes) 
-                                    */
-                                    inner_ihl = (inner_ip->ver_ihl & 0x0F) * 4;
-
-                                    /*
-                                    Check:
-                                        14 byte = header Ethernet
-                                        outer_ihl byte = header outer_ip calcolato
-                                        8 byte  = header ICMP minimo
-                                        inner_ihl byte = header inner_ip calcolato
-                                        8 byte  = header ICMP minimo (inner)
-                                    */
-                                    if (size >= 14 + outer_ihl + 8 + inner_ihl + 8) {
-
-                                        /*
-                                        Assegno il puntatore all'ICMP message del pacchetto ricevuto, che si trova dopo l'IP header, 
-                                        quindi dopo 14 byte (già considerati assegnando outer_ip = ... eth_r->payload;) di Ethernet 
-                                        header e outer_ihl byte di IP header
-                                        */
-                                        inner_icmp = (struct icmp_message *)((unsigned char *)inner_ip + inner_ihl);
-                                        /*
-                                        eth_r = (struct eth_frame *)buffer;
-                                        outer_ip = (struct ip_datagram *)eth_r->payload;
-                                        outer_icmp = (struct icmp_message *)((unsigned char *)outer_ip + outer_ihl);
-                                            outer_ihl = lunghezza dell'IP header del pacchetto ricevuto
-
-                                        tem = (struct time_exceeded_message *)outer_icmp;
-                                        inner_ip = (struct ip_datagram *)tem->payload;
-                                        inner_icmp = (struct icmp_message *)((unsigned char *)inner_ip + inner_ihl);
-                                            inner_ihl = lunghezza dell'IP header del pacchetto originale che ha causato il Time Exceeded message
-                                        */
-
-                                        // We check the identifier and the sequence number of the inner ICMP message, to be sure that it is a reply to our ping request
-                                        if (inner_icmp->id == htons(session_id) && inner_icmp->seq == htons(seq)) {
-                                            // Se l'id e il seq corrispondono a quelli inviati significa che il Time Exceeded message è una risposta al nostro ping request, 
-                                            // quindi possiamo stampare l'indirizzo IP del nodo che ha generato il Time Exceeded message, 
-                                            // che si trova nel campo srcip dell'IP header del pacchetto ricevuto (outer_ip->srcip), 
-                                            // e il TTL value (ttl) che abbiamo usato per inviare il ping request
-                                            
-                                            unsigned char *src_ip = (unsigned char *)&outer_ip->srcip;
-                                            printf("%2d\t%d.%d.%d.%d\t\tICMP Time Exceeded\n", ttl, src_ip[0], src_ip[1], src_ip[2], src_ip[3]);
-                                            hop_found = 1; // We set the hop_found variable to 1 to exit the while loop and increase the TTL value for the next ping request
-                                        }
-                                    }
-                                }
-                            } else if (outer_icmp->type == 0) { // If the type of the ICMP message is 0, it means that it is an Echo Reply message, so we check if it is a reply to our ping request by checking the identifier and the sequence number of the outer ICMP message
-                                if (outer_icmp->id == htons(session_id) && outer_icmp->seq == htons(seq)) {
-                                    unsigned char *src_ip = (unsigned char *)&outer_ip->srcip;
-                                    printf("%2d\t%d.%d.%d.%d\t\tEcho Reply\n", ttl, src_ip[0], src_ip[1], src_ip[2], src_ip[3]);
-                                    return 0;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
+Echo Reply received...
+22 (034) 00 (000) B6 (182) EC (236) 6A (106) 3C (060) FE (254) FF (255) 
+FF (255) FF (255) FF (255) FF (255) 08 (008) 00 (000) 45 (069) 00 (000) 
+00 (000) 30 (048) EC (236) 9C (156) 40 (064) 00 (000) F0 (240) 01 (001) 
+7F (127) B0 (176) C2 (194) F4 (244) 0A (010) A4 (164) 8B (139) A2 (162) 
+C5 (197) 44 (068) 00 (000) 00 (000) F9 (249) CC (204) AB (171) CD (205) 
+00 (000) 01 (001) 00 (000) 01 (001) 02 (002) 03 (003) 04 (004) 05 (005) 
+06 (006) 07 (007) 08 (008) 09 (009) 0A (010) 0B (011) 0C (012) 0D (013) 
+0E (014) 0F (015) 10 (016) 11 (017) 12 (018) 13 (019) 
+*/

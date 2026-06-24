@@ -27,5 +27,4 @@ int main() {
     Address of (int) w is: 102a10004
     Address of (int) z is: 102a1000c
     */
-
 }
